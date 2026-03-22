@@ -1,5 +1,8 @@
 import { GoogleGenerativeAI, SchemaType, Schema } from '@google/generative-ai';
 import { NextRequest, NextResponse } from 'next/server';
+import connectToDatabase from '@/lib/db';
+import { Chat } from '@/models/Chat';
+import { decrypt } from '@/lib/auth';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
@@ -18,7 +21,15 @@ const systemInstruction =
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages, model: selectedModel } = await req.json();
+    const { messages, model: selectedModel, chatId } = await req.json();
+
+    const cookie = req.cookies.get('session')?.value;
+    const session = await decrypt(cookie);
+    if (!session || !session.userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    
+    await connectToDatabase();
 
     if (!process.env.GEMINI_API_KEY) {
       return NextResponse.json({ error: 'API key not configured' }, { status: 500 });
@@ -133,7 +144,30 @@ Also search for and provide:
       parsed = { text: rawText };
     }
 
-    return NextResponse.json({ response: parsed });
+    let chatDoc;
+    if (chatId) {
+      chatDoc = await Chat.findOne({ _id: chatId, userId: session.userId });
+    }
+    
+    const lastUserMessageObj = messages[messages.length - 1];
+    
+    if (!chatDoc) {
+      const titleText = typeof lastUserMessageObj.content === 'object' 
+        ? lastUserMessageObj.content.text 
+        : String(lastUserMessageObj.content);
+        
+      chatDoc = new Chat({
+        userId: session.userId,
+        title: titleText.substring(0, 40) + (titleText.length > 40 ? '...' : ''),
+        messages: []
+      });
+    }
+
+    const newMessages = [...messages, { role: 'model', content: parsed }];
+    chatDoc.messages = newMessages;
+    await chatDoc.save();
+
+    return NextResponse.json({ response: parsed, chatId: chatDoc._id });
 
   } catch (error) {
     console.error('Chat error:', error);

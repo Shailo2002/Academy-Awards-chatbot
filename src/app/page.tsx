@@ -1,14 +1,44 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import ChatLayout from "@/components/ChatLayout";
 import MessageList, { Message } from "@/components/Chat/MessageList";
 import ChatInput from "@/components/Chat/ChatInput";
 
-export default function Home() {
+function ChatArea() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  // const [selectedModel, setSelectedModel] = useState("gemini-2.5-flash");
+  
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const chatId = searchParams.get('chatId');
+
+  useEffect(() => {
+    if (chatId) {
+      setIsLoading(true);
+      fetch('/api/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.chat && data.chat.messages) {
+          const formattedMessages = data.chat.messages.map((m: any, idx: number) => ({
+            id: m._id || idx.toString(),
+            role: m.role === 'model' ? 'assistant' : 'user', // Mapping model to assistant for UI compatibility
+            content: m.content
+          }));
+          setMessages(formattedMessages);
+        }
+      })
+      .catch(console.error)
+      .finally(() => setIsLoading(false));
+    } else {
+      setMessages([]); // Reset on "New Chat"
+    }
+  }, [chatId]);
 
   const handleSend = async (content: string) => {
     const userMsg: Message = { id: Date.now().toString(), role: "user", content };
@@ -22,10 +52,11 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: newMessages.map(m => ({
-            ...m,
-            content: typeof m.content === 'object' ? m.content.text : m.content
+            role: m.role === 'assistant' ? 'model' : 'user',
+            content: typeof m.content === 'object' ? m.content.text || m.content : m.content
           })),
-          model: "gemini-2.5-flash"
+          model: "gemini-2.5-flash",
+          chatId: chatId || undefined
         })
       });
 
@@ -38,16 +69,22 @@ export default function Home() {
       const botMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: data.response, // store the full { text, highlightWord, director, totalWins }
+        content: data.response,
       };
 
       setMessages((prev) => [...prev, botMsg]);
+
+      // If this is a new chat, update URL silently to maintain context
+      if (!chatId && data.chatId) {
+        router.push(`/?chatId=${data.chatId}`);
+      }
+
     } catch (error) {
       console.error("Chat error:", error);
       const errorMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: "The Academy is unavailable right now. Due to high volume you cannot use The Academy right now but please keep checking back.",
+        content: "The Academy is unavailable right now. Please try again.",
       };
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
@@ -56,26 +93,25 @@ export default function Home() {
   };
 
   return (
-    <ChatLayout>
-      <div style={{ padding: '12px 20px', borderBottom: '1px solid #2A2A2A', display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
-        {/* <select
-          value={selectedModel}
-          onChange={(e) => setSelectedModel(e.target.value)}
-          style={{ backgroundColor: '#1A1A1A', color: '#D4AF37', border: '1px solid #333', padding: '6px 12px', borderRadius: '6px', outline: 'none', fontSize: '13px', cursor: 'pointer' }}
-        >
-          <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-          <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-          <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-          <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-        </select> */}
-      </div>
+    <>
       <div style={{ flex: 1, overflowY: "auto", display: 'flex', flexDirection: 'column' }}>
         <MessageList
           messages={messages}
           isLoading={isLoading}
           onSuggestionClick={handleSend}
-        />      </div>
+        />
+      </div>
       <ChatInput onSend={handleSend} isLoading={isLoading} />
+    </>
+  );
+}
+
+export default function Home() {
+  return (
+    <ChatLayout>
+      <Suspense fallback={<div style={{ padding: '2rem', color: '#D4AF37' }}>Loading...</div>}>
+        <ChatArea />
+      </Suspense>
     </ChatLayout>
   );
 }
